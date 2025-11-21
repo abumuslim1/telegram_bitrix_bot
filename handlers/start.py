@@ -19,21 +19,36 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "Вы пока не авторизованы. Для входа используйте команду /login.\n\n"
             "После авторизации вы увидите свои задачи и мероприятия."
         )
-    await update.message.reply_text(text, reply_markup=main_menu_keyboard())
+    if update.message:
+        await update.message.reply_text(text, reply_markup=main_menu_keyboard())
+    elif update.callback_query:
+        await update.callback_query.edit_message_text(text, reply_markup=main_menu_keyboard())
 
 
 async def show_tasks_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text(
-        "Раздел Задачи. Выберите действие:",
-        reply_markup=tasks_menu_inline(),
-    )
+    if update.message:
+        await update.message.reply_text(
+            "Раздел Задачи. Выберите действие:",
+            reply_markup=tasks_menu_inline(),
+        )
+    elif update.callback_query:
+        await update.callback_query.edit_message_text(
+            "Раздел Задачи. Выберите действие:",
+            reply_markup=tasks_menu_inline(),
+        )
 
 
 async def show_calendar_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text(
-        "Раздел Календарь. Выберите действие:",
-        reply_markup=calendar_menu_inline(),
-    )
+    if update.message:
+        await update.message.reply_text(
+            "Раздел Календарь. Выберите действие:",
+            reply_markup=calendar_menu_inline(),
+        )
+    elif update.callback_query:
+        await update.callback_query.edit_message_text(
+            "Раздел Календарь. Выберите действие:",
+            reply_markup=calendar_menu_inline(),
+        )
 
 
 async def show_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

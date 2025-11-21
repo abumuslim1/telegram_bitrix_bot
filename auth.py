@@ -17,11 +17,9 @@ from config import COMMON_PASSWORD
 DB_PATH = Path(__file__).resolve().parent / "bot_data.sqlite3"
 
 # ВНИМАНИЕ: заполните маппинг логинов под ваших сотрудников.
-# Ключ: логин, Значение: словарь с bitrix_user_id и именем.
+# Ключ: логин (нижний регистр), Значение: словарь с bitrix_user_id и именем.
 LOGIN_MAP = {
-    # Примеры:
-    # "ivan": {"bitrix_user_id": 1, "name": "Иван Иванов"},
-    # "petr": {"bitrix_user_id": 2, "name": "Петр Петров"},
+    # "admin": {"bitrix_user_id": 1, "name": "Администратор"},
 }
 
 
@@ -48,11 +46,14 @@ def validate_credentials(login: str, password: str) -> Optional[Dict]:
     Возвращает словарь с данными пользователя при успехе или None.
     """
     login = login.strip().lower()
+
     if password != COMMON_PASSWORD:
         return None
+
     user_info = LOGIN_MAP.get(login)
     if not user_info:
         return None
+
     return {
         "login": login,
         "bitrix_user_id": user_info["bitrix_user_id"],

@@ -32,7 +32,8 @@ from handlers.tasks import (
     TaskCreateStates,
 )
 from handlers.calendar_handler import (
-    handle_calendar_callback,
+    calendar_list_callback,
+    calendar_create_entry,
     calendar_create_title,
     calendar_create_description,
     calendar_create_date,
@@ -58,13 +59,11 @@ async def text_router(update, context):
     text = update.message.text.strip()
 
     if text == "Задачи":
-        # Проверим авторизацию
         if not get_bound_user(update.effective_user.id):
             await update.message.reply_text(
                 "Вы не авторизованы. Используйте /login для входа."
             )
             return
-        from handlers.start import show_tasks_menu
         await show_tasks_menu(update, context)
     elif text == "Календарь":
         if not get_bound_user(update.effective_user.id):
@@ -72,10 +71,8 @@ async def text_router(update, context):
                 "Вы не авторизованы. Используйте /login для входа."
             )
             return
-        from handlers.start import show_calendar_menu
         await show_calendar_menu(update, context)
     elif text == "Мой профиль":
-        from handlers.start import show_profile
         await show_profile(update, context)
     else:
         await update.message.reply_text(
@@ -127,7 +124,7 @@ def main():
     # Создание мероприятий (диалог)
     calendar_create_conv = ConversationHandler(
         entry_points=[
-            CallbackQueryHandler(handle_calendar_callback, pattern="^calendar:create$")
+            CallbackQueryHandler(calendar_create_entry, pattern="^calendar:create$")
         ],
         states={
             CalendarCreateStates.TITLE: [MessageHandler(filters.TEXT & ~filters.COMMAND, calendar_create_title)],
@@ -145,11 +142,11 @@ def main():
     application.add_handler(calendar_create_conv)
 
     # Callback'и задач: список/фильтр
-    application.add_handler(CallbackQueryHandler(handle_tasks_callback, pattern="^tasks:(list|page|filter(:role:.*|:status:.*)?$)"))
-    application.add_handler(CallbackQueryHandler(handle_tasks_filter_submenus, pattern="^tasks:filter_(role_menu|status_menu)$"))
+    application.add_handler(CallbackQueryHandler(handle_tasks_callback, pattern=r"^tasks:(list|page:.*|filter$|filter:role:.*|filter:status:.*)$"))
+    application.add_handler(CallbackQueryHandler(handle_tasks_filter_submenus, pattern=r"^tasks:filter_(role_menu|status_menu)$"))
 
-    # Callback'и календаря (список/создание)
-    application.add_handler(CallbackQueryHandler(handle_calendar_callback, pattern="^calendar:(list|create)$"))
+    # Callback'и календаря: список мероприятий
+    application.add_handler(CallbackQueryHandler(calendar_list_callback, pattern=r"^calendar:list$"))
 
     # Текстовые сообщения (главное меню)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_router))

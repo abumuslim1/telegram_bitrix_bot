@@ -1,5 +1,5 @@
 from enum import IntEnum
-from typing import List, Dict
+from typing import List, Dict, Optional, Set
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
@@ -20,32 +20,22 @@ class CalendarCreateStates(IntEnum):
 EMPLOYEES_PAGE_SIZE = 10
 
 
-def _ensure_authorized(update: Update) -> Dict:
-    user = update.effective_user
-    bound = get_bound_user(user.id)
-    return bound
+def _ensure_authorized_from_update_or_query(update_or_query) -> Optional[Dict]:
+    if hasattr(update_or_query, "effective_user"):
+        user = update_or_query.effective_user
+    else:
+        user = update_or_query.from_user
+    return get_bound_user(user.id)
 
 
-async def handle_calendar_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+# ======== Просмотр мероприятий ========
+
+async def calendar_list_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработка callback calendar:list — показать ближайшие мероприятия."""
     query = update.callback_query
     await query.answer()
-    data = query.data
 
-    bound = _ensure_authorized(update)
-    if not bound:
-        await query.edit_message_text(
-            "Вы не авторизованы. Используйте /login для входа."
-        )
-        return
-
-    if data == "calendar:list":
-        await _show_events(query, context, page=0)
-    elif data == "calendar:create":
-        await _create_event_start(query, context)
-
-
-async def _show_events(query, context, page: int):
-    bound = _ensure_authorized(query)
+    bound = _ensure_authorized_from_update_or_query(update)
     if not bound:
         await query.edit_message_text(
             "Вы не авторизованы. Используйте /login для входа."
@@ -57,8 +47,6 @@ async def _show_events(query, context, page: int):
         await query.edit_message_text("Ближайших мероприятий не найдено.")
         return
 
-    # Простая реализация без постраничного вывода, так как Bitrix календарь
-    # требует доработки под ваш кейс.
     lines = ["Ближайшие мероприятия:"]
     for ev in events:
         name = ev.get("NAME") or ev.get("TITLE") or "(без названия)"
@@ -70,7 +58,18 @@ async def _show_events(query, context, page: int):
 
 # ======== Создание мероприятия (диалог) ========
 
-async def _create_event_start(query, context) -> int:
+async def calendar_create_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Точка входа в диалог создания события (callback calendar:create)."""
+    query = update.callback_query
+    await query.answer()
+
+    bound = _ensure_authorized_from_update_or_query(update)
+    if not bound:
+        await query.edit_message_text(
+            "Вы не авторизованы. Используйте /login для входа."
+        )
+        return ConversationHandler.END
+
     await query.edit_message_text("Создание мероприятия. Введите название:")
     return CalendarCreateStates.TITLE
 
@@ -109,14 +108,13 @@ async def calendar_create_date(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         return CalendarCreateStates.DATE
 
-    # Сохраним ISO дату YYYY-MM-DD
     date_iso = dt.date().isoformat()
     context.user_data["calendar_create"]["date_iso"] = date_iso
 
     employees = get_employees()
     context.user_data["employees_cache"] = employees
     context.user_data["employees_page"] = 0
-    context.user_data["attendees_selected"] = set()
+    context.user_data["attendees_selected"] = set()  # type: ignore
 
     if not employees:
         await update.message.reply_text(
@@ -138,7 +136,6 @@ def _attendees_keyboard(employees: List[Dict], context, prefix: str) -> InlineKe
 
     kb = base_emp_keyboard(employees, page=page, page_size=EMPLOYEES_PAGE_SIZE, prefix=prefix)
 
-    # Добавим кнопки "Готово" и "Отмена"
     rows = kb.inline_keyboard.copy()
     rows.append(
         [
@@ -155,7 +152,7 @@ async def calendar_attendees_callback(update: Update, context: ContextTypes.DEFA
     data = query.data
     employees: List[Dict] = context.user_data.get("employees_cache", [])
     page = context.user_data.get("employees_page", 0)
-    selected = context.user_data.get("attendees_selected", set())
+    selected: Set[int] = context.user_data.get("attendees_selected", set())
 
     if data.startswith("event_att:page:"):
         page = int(data.split(":")[-1])
@@ -186,7 +183,6 @@ async def calendar_attendees_callback(update: Update, context: ContextTypes.DEFA
         return ConversationHandler.END
 
     if data == "event_att:done":
-        # Переход к подтверждению
         payload = context.user_data.get("calendar_create", {})
         title = payload.get("title", "")
         description = payload.get("description", "")
@@ -196,7 +192,6 @@ async def calendar_attendees_callback(update: Update, context: ContextTypes.DEFA
         payload["attendees_ids"] = attendees_ids
         context.user_data["calendar_create"] = payload
 
-        # Формируем текст подтверждения
         lines = [
             "Проверьте данные мероприятия:",
             f"Название: {title}",
@@ -231,7 +226,7 @@ async def calendar_create_confirm_callback(update: Update, context: ContextTypes
         return ConversationHandler.END
 
     if data == "event_create:confirm":
-        bound = _ensure_authorized(update)
+        bound = _ensure_authorized_from_update_or_query(update)
         if not bound:
             await query.edit_message_text(
                 "Вы не авторизованы. Используйте /login для входа."

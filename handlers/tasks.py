@@ -1,5 +1,5 @@
 from enum import IntEnum
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes, ConversationHandler
@@ -21,30 +21,42 @@ TASKS_PAGE_SIZE = 5
 EMPLOYEES_PAGE_SIZE = 10
 
 
-def _ensure_authorized(update: Update) -> Dict:
-    user = update.effective_user
-    bound = get_bound_user(user.id)
-    return bound
+def _ensure_authorized_from_update_or_query(update_or_query) -> Optional[Dict]:
+    """
+    Принимает либо Update, либо CallbackQuery и возвращает привязанного пользователя
+    (или None, если не авторизован).
+    """
+    if hasattr(update_or_query, "effective_user"):
+        user = update_or_query.effective_user
+    else:
+        # fallback
+        user = update_or_query.from_user
+    from auth import get_bound_user as _gb
+    return _gb(user.id)
 
+
+# ======== Просмотр и фильтр задач (callback-и) ========
 
 async def handle_tasks_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработка callback'ов из меню задач."""
+    """Обработка callback'ов из меню задач: список, пагинация, фильтр."""
     query = update.callback_query
     await query.answer()
     data = query.data
 
-    bound = _ensure_authorized(update)
+    bound = _ensure_authorized_from_update_or_query(update)
     if not bound:
         await query.edit_message_text(
             "Вы не авторизованы. Используйте /login для входа."
         )
         return
 
+    # Инициализируем фильтр если нужно
+    context.user_data.setdefault("tasks_filter", {})
+    filt = context.user_data["tasks_filter"]
+    filt.setdefault("role", "do")
+    filt.setdefault("status", "active")
+
     if data == "tasks:list":
-        # сбросим пагинацию и фильтры по умолчанию
-        context.user_data.setdefault("tasks_filter", {})
-        context.user_data["tasks_filter"].setdefault("role", "do")       # делаю
-        context.user_data["tasks_filter"].setdefault("status", "active") # активные
         await _show_tasks_page(query, context, page=0)
     elif data.startswith("tasks:page:"):
         page = int(data.split(":")[-1])
@@ -53,14 +65,43 @@ async def handle_tasks_callback(update: Update, context: ContextTypes.DEFAULT_TY
         await _show_filter_menu(query, context)
     elif data.startswith("tasks:filter:role:"):
         role_key = data.split(":")[-1]
-        context.user_data.setdefault("tasks_filter", {})
         context.user_data["tasks_filter"]["role"] = role_key
         await _show_filter_menu(query, context, message="Роль обновлена.")
     elif data.startswith("tasks:filter:status:"):
         status_key = data.split(":")[-1]
-        context.user_data.setdefault("tasks_filter", {})
         context.user_data["tasks_filter"]["status"] = status_key
         await _show_filter_menu(query, context, message="Статус обновлен.")
+
+
+async def handle_tasks_filter_submenus(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Подменю выбора роли/статуса."""
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+
+    filt = context.user_data.get("tasks_filter", {"role": "do", "status": "active"})
+
+    if data == "tasks:filter_role_menu":
+        role = filt.get("role", "do")
+        text = "Выберите роль:"
+        buttons = [
+            [InlineKeyboardButton(("✅ " if role == "do" else "") + "Делаю", callback_data="tasks:filter:role:do")],
+            [InlineKeyboardButton(("✅ " if role == "assist" else "") + "Помогаю", callback_data="tasks:filter:role:assist")],
+            [InlineKeyboardButton(("✅ " if role == "originator" else "") + "Поручил", callback_data="tasks:filter:role:originator")],
+            [InlineKeyboardButton(("✅ " if role == "observer" else "") + "Наблюдаю", callback_data="tasks:filter:role:observer")],
+            [InlineKeyboardButton("Назад", callback_data="tasks:filter")],
+        ]
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons))
+    elif data == "tasks:filter_status_menu":
+        status = filt.get("status", "active")
+        text = "Выберите статус:"
+        buttons = [
+            [InlineKeyboardButton(("✅ " if status == "active" else "") + "Активные", callback_data="tasks:filter:status:active")],
+            [InlineKeyboardButton(("✅ " if status == "completed" else "") + "Завершенные", callback_data="tasks:filter:status:completed")],
+            [InlineKeyboardButton(("✅ " if status == "all" else "") + "Все", callback_data="tasks:filter:status:all")],
+            [InlineKeyboardButton("Назад", callback_data="tasks:filter")],
+        ]
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons))
 
 
 async def _show_filter_menu(query, context, message: str = ""):
@@ -104,38 +145,8 @@ async def _show_filter_menu(query, context, message: str = ""):
     )
 
 
-async def handle_tasks_filter_submenus(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query
-    await query.answer()
-    data = query.data
-
-    filt = context.user_data.get("tasks_filter", {"role": "do", "status": "active"})
-
-    if data == "tasks:filter_role_menu":
-        role = filt.get("role", "do")
-        text = "Выберите роль:"
-        buttons = [
-            [InlineKeyboardButton(("✅ " if role == "do" else "") + "Делаю", callback_data="tasks:filter:role:do")],
-            [InlineKeyboardButton(("✅ " if role == "assist" else "") + "Помогаю", callback_data="tasks:filter:role:assist")],
-            [InlineKeyboardButton(("✅ " if role == "originator" else "") + "Поручил", callback_data="tasks:filter:role:originator")],
-            [InlineKeyboardButton(("✅ " if role == "observer" else "") + "Наблюдаю", callback_data="tasks:filter:role:observer")],
-            [InlineKeyboardButton("Назад", callback_data="tasks:filter")],
-        ]
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons))
-    elif data == "tasks:filter_status_menu":
-        status = filt.get("status", "active")
-        text = "Выберите статус:"
-        buttons = [
-            [InlineKeyboardButton(("✅ " if status == "active" else "") + "Активные", callback_data="tasks:filter:status:active")],
-            [InlineKeyboardButton(("✅ " if status == "completed" else "") + "Завершенные", callback_data="tasks:filter:status:completed")],
-            [InlineKeyboardButton(("✅ " if status == "all" else "") + "Все", callback_data="tasks:filter:status:all")],
-            [InlineKeyboardButton("Назад", callback_data="tasks:filter")],
-        ]
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons))
-
-
 async def _show_tasks_page(query, context, page: int):
-    bound = _ensure_authorized(query)
+    bound = _ensure_authorized_from_update_or_query(query)
     if not bound:
         await query.edit_message_text(
             "Вы не авторизованы. Используйте /login для входа."
@@ -161,15 +172,16 @@ async def _show_tasks_page(query, context, page: int):
 
     lines = ["Список задач:"]
     for t in tasks:
+        task_id = t.get("id") or t.get("ID")
+        title = t.get("title") or t.get("TITLE") or "(без названия)"
         deadline = t.get("deadline") or t.get("DEADLINE") or ""
         if deadline:
             # Обрезаем до даты
             date_part = deadline.split("T")[0] if "T" in deadline else deadline
         else:
             date_part = "-"
-        lines.append(f"#{t.get('id') or t.get('ID')} - {t.get('title') or t.get('TITLE')} (до {date_part})")
+        lines.append(f"#{task_id} - {title} (до {date_part})")
 
-    # Проверяем есть ли следующая страница (по полю next)
     has_next = bool(data.get("next") is not None)
     has_prev = page > 0
 
@@ -182,20 +194,18 @@ async def _show_tasks_page(query, context, page: int):
 # ======== Создание задачи (диалог) ========
 
 async def create_task_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    bound = _ensure_authorized(update)
+    """Точка входа в диалог создания задачи (callback tasks:create)."""
+    query = update.callback_query
+    await query.answer()
+
+    bound = _ensure_authorized_from_update_or_query(update)
     if not bound:
-        await update.callback_query.answer()
-        await update.callback_query.edit_message_text(
+        await query.edit_message_text(
             "Вы не авторизованы. Используйте /login для входа."
         )
         return ConversationHandler.END
 
-    if update.callback_query:
-        await update.callback_query.answer()
-        await update.callback_query.edit_message_text("Создание задачи. Введите название:")
-    else:
-        await update.message.reply_text("Создание задачи. Введите название:")
-
+    await query.edit_message_text("Создание задачи. Введите название:")
     return TaskCreateStates.TITLE
 
 
@@ -319,7 +329,7 @@ async def task_create_confirm_callback(update: Update, context: ContextTypes.DEF
         return ConversationHandler.END
 
     if data == "task_create:confirm":
-        bound = _ensure_authorized(update)
+        bound = _ensure_authorized_from_update_or_query(update)
         if not bound:
             await query.edit_message_text(
                 "Вы не авторизованы. Используйте /login для входа."

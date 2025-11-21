@@ -8,12 +8,10 @@
 - create_calendar_event(...)
 - get_employees(...)
 
-ВАЖНО:
-- Реализация зависит от вашей схемы авторизации в Bitrix24.
-- Здесь приведен пример для входящего вебхука.
+Часть методов (особенно календарь) нужно будет адаптировать под ваш портал.
 """
 
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 import requests
 
 from config import BITRIX_WEBHOOK_BASE_URL
@@ -23,13 +21,13 @@ class BitrixAPIError(Exception):
     pass
 
 
-def _call(method: str, params: Optional[Dict] = None) -> Dict:
+def _call(method: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     url = BITRIX_WEBHOOK_BASE_URL.rstrip("/") + "/" + method
     response = requests.post(url, json=params or {})
     if response.status_code != 200:
         raise BitrixAPIError(f"HTTP {response.status_code}: {response.text}")
     data = response.json()
-    if "error" in data:
+    if isinstance(data, dict) and "error" in data:
         raise BitrixAPIError(f"{data['error']}: {data.get('error_description')}")
     return data
 
@@ -43,38 +41,41 @@ def get_employees() -> List[Dict]:
     Возвращаем список словарей:
     { 'ID': int, 'NAME': str, 'LAST_NAME': str, 'FULL_NAME': str }
     """
-    # Пример для метода user.get (проверьте доступность)
     data = _call("user.get", {})
-    result = []
-    for item in data.get("result", []):
-        full_name = item.get("NAME", "") + " " + item.get("LAST_NAME", "")
-        result.append(
-            {
-                "ID": int(item["ID"]),
-                "NAME": item.get("NAME", ""),
-                "LAST_NAME": item.get("LAST_NAME", ""),
-                "FULL_NAME": full_name.strip() or item.get("LOGIN", ""),
-            }
-        )
-    return result
+    result = data.get("result", [])
+    employees: List[Dict] = []
+    if isinstance(result, list):
+        for item in result:
+            full_name = (item.get("NAME", "") + " " + item.get("LAST_NAME", "")).strip()
+            employees.append(
+                {
+                    "ID": int(item["ID"]),
+                    "NAME": item.get("NAME", ""),
+                    "LAST_NAME": item.get("LAST_NAME", ""),
+                    "FULL_NAME": full_name or item.get("LOGIN", ""),
+                }
+            )
+    return employees
 
 
 # ======== Задачи ========
 
 def get_tasks(bitrix_user_id: int, role: str, status: str, start: int = 0, limit: int = 5) -> Dict:
     """
-    Получение задач по пользователю с фильтрацией и пагинацией.
+    Получение задач по пользователю с фильтрацией и простейшей пагинацией по offset.
+
     role: 'do', 'assist', 'originator', 'observer'
     status: 'active', 'completed', 'all'
     Возвращает:
     {
       'tasks': [ {...}, ... ],
-      'total': int
+      'total': int,
+      'next': Optional[int]
     }
     """
-    # Пример фильтра, нужно адаптировать под ваши поля и требования.
-    filter_ = {}
-    # Фильтр по роли:
+    filter_: Dict[str, Any] = {}
+
+    # Роль
     if role == "do":          # Делаю
         filter_["RESPONSIBLE_ID"] = bitrix_user_id
     elif role == "assist":    # Помогаю (соисполнитель)
@@ -84,12 +85,12 @@ def get_tasks(bitrix_user_id: int, role: str, status: str, start: int = 0, limit
     elif role == "observer":  # Наблюдаю
         filter_["AUDITOR"] = bitrix_user_id
 
-    # Фильтр по статусу:
-    # В Bitrix24 свои статусы (1 - новая, 2 - ждет выполнения и т.д.).
+    # Статус
+    # Набор статусов примерный, при необходимости поправьте под свои статусы.
     if status == "active":
-        filter_["STATUS"] = [1, 2, 3, 4]  # пример
+        filter_["STATUS"] = [1, 2, 3, 4]
     elif status == "completed":
-        filter_["STATUS"] = [5, 6]        # пример
+        filter_["STATUS"] = [5, 6]
 
     params = {
         "filter": filter_,
@@ -97,13 +98,28 @@ def get_tasks(bitrix_user_id: int, role: str, status: str, start: int = 0, limit
         "start": start,
     }
     data = _call("tasks.task.list", params)
-    result = data.get("result", {})
-    tasks = result.get("tasks", [])
-    next_ = result.get("next", None)
-    total = len(tasks)
+
+    tasks: List[Dict] = []
+    next_: Optional[int] = None
+
+    # Bitrix может вернуть разные структуры, постараемся отработать все варианты.
+    result = data.get("result")
+    if isinstance(result, dict):
+        # Новый формат: {"result": {"tasks": [...], "next": ..., ...}}
+        tasks = result.get("tasks", []) or []
+        next_ = result.get("next")
+    elif isinstance(result, list):
+        # Старый формат: {"result": [ {...}, {...} ], "next": ...}
+        tasks = result
+        next_ = data.get("next")
+    else:
+        # На всякий случай
+        tasks = data.get("tasks", []) or []
+        next_ = data.get("next")
+
     return {
         "tasks": tasks,
-        "total": total,
+        "total": len(tasks),
         "next": next_,
     }
 
@@ -120,7 +136,7 @@ def create_task(
     deadline_iso в формате 'YYYY-MM-DDTHH:MM:SS' или None.
     Возвращает ID созданной задачи.
     """
-    fields = {
+    fields: Dict[str, Any] = {
         "TITLE": title,
         "DESCRIPTION": description,
         "RESPONSIBLE_ID": responsible_id,
@@ -131,7 +147,13 @@ def create_task(
         fields["CREATED_BY"] = created_by
 
     data = _call("tasks.task.add", {"fields": fields})
-    task_id = data.get("result", {}).get("task", {}).get("id")
+    # В разных версиях структура тоже может отличаться
+    res = data.get("result", {})
+    if isinstance(res, dict) and "task" in res:
+        task_id = res["task"].get("id")
+    else:
+        task_id = res.get("task_id") or res.get("ID")
+
     if not task_id:
         raise BitrixAPIError("Не удалось получить ID созданной задачи")
     return int(task_id)
@@ -142,11 +164,13 @@ def create_task(
 def get_calendar_events(bitrix_user_id: int, limit: int = 10) -> List[Dict]:
     """
     Получение ближайших событий календаря пользователя.
-    В Bitrix24 есть несколько вариантов API для календаря.
-    Здесь нужно адаптировать под ваш метод (calendar.event.get или др.).
+
+    ЭТУ ФУНКЦИЮ НУЖНО ДОРАБОТАТЬ под ваш портал:
+    - Можно использовать метод calendar.event.get или calendar.events.list и т.п.
+    - Сейчас возвращается пустой список, поэтому бот честно пишет:
+      "Ближайших мероприятий не найдено."
     """
-    # TODO: адаптируйте под ваш конкретный метод календаря.
-    # Заглушка: возвращаем пустой список.
+    # TODO: реализовать конкретный вызов API календаря Bitrix24.
     return []
 
 
@@ -159,10 +183,12 @@ def create_calendar_event(
 ) -> Optional[int]:
     """
     Создание события календаря.
-    date_iso в формате 'YYYY-MM-DD'.
+
+    ВАЖНО: эту функцию тоже нужно будет адаптировать под ваш метод Bitrix24.
+    Сейчас это заглушка, чтобы бот не падал.
     """
-    # TODO: реализовать вызов нужного метода календаря Bitrix24.
-    # Пример структуры полей (нужно адаптировать):
+    # Пример структуры полей (КОММЕНТАРИЙ, НЕ РАБОТАЕТ БЕЗ РЕАЛЬНОГО МЕТОДА):
+    #
     # fields = {
     #     "NAME": name,
     #     "DESCRIPTION": description,

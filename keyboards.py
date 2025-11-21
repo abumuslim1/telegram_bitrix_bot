@@ -2,8 +2,8 @@
 Клавиатуры (Reply и Inline) для бота.
 """
 
+from typing import List, Dict
 from telegram import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
-from typing import List, Tuple, Dict, Callable
 
 
 def main_menu_keyboard() -> ReplyKeyboardMarkup:
